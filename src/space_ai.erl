@@ -5,13 +5,13 @@
 -include("include/space.hrl").
 
 %% To be changed by AI implementer:
--record(state, {some_data :: string()}).
+-record(state, {shoot, shootn, ignore = []}).
 
 give_moves(RoundId, Config, Team, OtherTeams, Events, state_uninitialized) ->
-    State = #state{some_data = "Initial state!"},
+    State = #state{shoot = false},
     give_moves(RoundId, Config, Team, OtherTeams, Events, State);
 
-give_moves(RoundId,
+give_moves(_RoundId,
            #config{bots         = _ConfigBots,
                    field_radius = ConfigFieldRadius,
                    move         = _ConfigMove,
@@ -28,27 +28,69 @@ give_moves(RoundId,
                  bots    = MyBots} = _MyTeam,
            _OtherTeams,
            Events,
-           #state{some_data = SomeData} = State) ->
+           State0) ->
 
     MyBotIds = [MB#bot.bot_id || MB <- MyBots],
 
     %% Current AI state to keep information
     %% not given by the server (my own memory)
-    io:format("Current state: ~p~n", [SomeData]),
-
-    %% Some modifications to the local state, information
-    %% that is not provided by the server.
-    NewState = State#state{some_data = "Our grand plan is to win!"},
+    io:format("Events: ~p~n", [Events]),
+    io:format("Current state: ~p~n", [State0]),
 
     %% All hostile bots seen:
-    RadarSeen    = [Pos || {radar_echo, Pos} <- Events],
-    AdjacentSeen = [Pos || {see, _Source, BotId, Pos} <- Events,
+    RadarSeen0    = [Pos || {radar_echo, Pos} <- Events],
+    AdjacentSeen0 = [Pos || {see, _Source, BotId, Pos} <- Events,
                            not lists:member(BotId, MyBotIds)],
+
+    AdjacentMy0 = [Source || {see, Source, BotId, _Pos} <- Events,
+                           not lists:member(BotId, MyBotIds)],
+    AdjacentMy = uniq(AdjacentMy0),
+
+    State =
+    lists:foldl(fun({X,Y}, S) ->
+                        case lists:member({X,Y}, S#state.ignore) of
+                            true ->
+                                S;
+                            false ->
+                                case lists:member({X,Y}, lists:flatten(S#state.shoot)) of
+                                    true ->
+                                        case lists:member({X,Y}, [Bot#bot.pos || Bot <- MyBots]) of
+                                            false ->
+                                        case length([Z || Z = {hit, _, _} <- Events]) of
+                                            0 ->
+                                                S#state{ignore = [{X,Y}|S#state.ignore]};
+                                            _ ->
+                                                S
+                                        end;
+                                            true ->
+                                                S
+                                        end;
+                                    false ->
+                                        S
+                                end
+                        end
+                end, State0, RadarSeen0 ++ AdjacentSeen0),
+
+    RadarSeen = RadarSeen0 -- State#state.ignore,
+    AdjacentSeen = AdjacentSeen0 -- State#state.ignore,
+
 
     Detected = [ DetectedBot || {detected, DetectedBot} <- Events ] ++
                [ DetectedBot || {see, DetectedBot, BotId, _} <- Events,
                                 lists:member(DetectedBot, MyBotIds),
                                 not lists:member(BotId, MyBotIds) ],
+
+    Damaged = [ BotId || {damaged, BotId, _Damage} <- Events],
+
+    NAlive = lists:foldl(fun(#bot{alive = true},A) ->
+                                 A+1;
+                            (_, A) ->
+                                 A
+                         end, 0, MyBots)
+             - length(AdjacentMy) - length(uniq(Detected)),
+
+    io:format("(We have) Seen: ~p~n(We are) Detected: ~p~n(We are) Damaged:~p~nNAlive: ~p~n",
+              [RadarSeen ++ AdjacentSeen, Detected, Damaged, NAlive]),
 
     %% Other supported events:
     %% Hits    = [{radar_echo, BotId, Source} ||
@@ -67,23 +109,53 @@ give_moves(RoundId,
                           team_id = _MyBotTeaMId,
                           hp      = _MyBotHP,
                           alive   = _IsMyBotAlive,
-                          pos     = {MyBotX, MyBotY}}) ->
-                     IAmDetected = lists:member(BotId, Detected),
-                     if IAmDetected ->
-                            io:format("Detected ~p:~p~n", [MyBotX, MyBotY]),
-                            run_as_fast_as_you_can(BotId, MyBotX, MyBotY,
-                                                   ConfigFieldRadius);
-                        AdjacentSeen =/= [] ->
-                            shoot(BotId, hd(AdjacentSeen));
-                        RadarSeen =/= [] ->
-                            shoot(BotId, hd(RadarSeen));
-                        true->
-                            scan(BotId, ConfigFieldRadius)
-                     end
+                          pos     = {MyBotX, MyBotY}}, {Actions, S}) ->
+
+                     IAmDetected = lists:member(BotId, Detected ++ Damaged),
+                     {Action, NewState} =
+                         if IAmDetected ->
+                                {run_as_fast_as_you_can(BotId, MyBotX, MyBotY,
+                                                       ConfigFieldRadius),
+                                 S};
+                            AdjacentSeen =/= [] ->
+                                case lists:member(BotId, AdjacentMy) of
+                                    true ->
+                                        {run_as_fast_as_you_can(BotId, MyBotX, MyBotY,
+                                                                ConfigFieldRadius),
+                                         S};
+                                    false ->
+                                        Shoot = shoot(BotId, hd(AdjacentSeen)),
+                                        {Shoot, write_shoot(S,AdjacentSeen)}
+                                end;
+                            RadarSeen =/= []
+                            andalso (S#state.shootn < NAlive-1
+                                     orelse NAlive =:= 1) ->
+                                Shoot = shoot(BotId, hd(RadarSeen)),
+                                {Shoot, write_shoot(S,RadarSeen)};
+                            RadarSeen =/= []
+                            andalso S#state.shootn =:= NAlive-1 ->
+                                {scanxy(BotId, hd(RadarSeen)), S};
+                            true->
+                                {scan(BotId, ConfigFieldRadius), S}
+                         end,
+                     {[Action|Actions], NewState}
                  end,
-    BotActions = lists:map(MyCleverAI, MyBots),
+    ClearState = State#state{shoot=[], shootn = 0},
+    {BotActions, NewState} = lists:foldl(MyCleverAI, {[], ClearState}, MyBots),
     erase(scatter),
-    {space:mk_actions(RoundId, BotActions), NewState}.
+
+    io:format("Actions: ~p~n", [BotActions]),
+    {BotActions, NewState}.
+
+write_shoot(#state{shoot = X} = State, Where) ->
+    State1 =
+    case lists:member(Where, X) of
+        true ->
+            State;
+        false ->
+            State#state{shoot = [Where | X]}
+    end,
+    State1#state{shootn = State1#state.shootn+1}.
 
 run_as_fast_as_you_can(BotId, MyBotX, MyBotY, ConfigFieldRadius) ->
     Directions = [
@@ -99,25 +171,24 @@ run_as_fast_as_you_can(BotId, MyBotX, MyBotY, ConfigFieldRadius) ->
                             inside_field(X,Y,ConfigFieldRadius)
                           ],
     {GoTo,_} = random(AvailableDirections),
-    space:mk_action(<<"move">>,
-                    BotId,
-                    GoTo).
+    {move, BotId, GoTo}.
 
 shoot(BotId, {WhereX, WhereY}) ->
     Scatter0 = get(scatter),
     {MyWhere, Scatter} =
     case Scatter0 of
         undefined ->
-            {L,_} = random([
+            {L0,_} = random([
                 [{WhereX+1, WhereY}, {WhereX-1, WhereY+1}, {WhereX, WhereY-1}],
                 [{WhereX-1, WhereY}, {WhereX+1, WhereY-1}, {WhereX, WhereY+1}]
             ]),
+            L = shuffle_list(L0),
             random(L);
         _ ->
             random(Scatter0)
     end,
     put(scatter, Scatter),
-    space:mk_action(<<"cannon">>, BotId, MyWhere).
+    {cannon, BotId, MyWhere}.
 
 random(List) ->
     H = lists:nth(
@@ -128,15 +199,33 @@ random(List) ->
             ),
     {H,List--[H]}.
 
+shuffle_list(List) ->
+   {NewList, _} = lists:foldl( fun(_El, {Acc,Rest}) ->          
+       RandomEl = lists:nth( random:uniform(length(Rest)), Rest),
+       {[RandomEl|Acc], lists:delete(RandomEl, Rest)}            
+   end, {[],List}, List),
+   NewList.
+
 scan(BotId, ConfigFieldRadius) ->
     ScanRadius = ConfigFieldRadius - 2,
     AllCoords = [{X,Y} || X <- lists:seq(-ScanRadius, ScanRadius),
                           Y <- lists:seq(-ScanRadius, ScanRadius),
                           inside_field(X,Y,ScanRadius)],
     {{RX,RY},_} = random(AllCoords),
-    space:mk_action(<<"radar">>,
-                    BotId,
-                    {RX, RY}).
+    {radar, BotId, {RX, RY}}.
+
+scanxy(BotId, Location) ->
+    {radar, BotId, Location}.
 
 inside_field(X,Y,Radius) ->
     abs(X) =< Radius andalso abs(Y) =< Radius andalso abs(X+Y) =< Radius.
+
+uniq(List) ->
+    lists:foldl( fun(X, L) ->
+                         case lists:member(X, L) of
+                             true ->
+                                 L;
+                             false ->
+                                 [X|L]
+                         end
+                 end, [], List).

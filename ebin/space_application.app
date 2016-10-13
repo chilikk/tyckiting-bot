@@ -10,6 +10,6 @@
   {applications, [kernel, stdlib]},
   {mod, {space_application, []}},
   {env, [{current_ai,   space_ai},
-         {host_address, "ws://10.147.40.188:3000"},
-         {team_name,    <<"EmilDenys">>}]
+         {host_address, "ws://10.147.40.105:3000"},
+         {team_name,    <<"RamDenys">>}]
   }]}.
