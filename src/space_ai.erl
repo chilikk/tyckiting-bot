@@ -47,29 +47,18 @@ give_moves(_RoundId,
     AdjacentMy = uniq(AdjacentMy0),
 
     State =
-    lists:foldl(fun({X,Y}, S) ->
-                        case lists:member({X,Y}, S#state.ignore) of
-                            true ->
-                                S;
-                            false ->
-                                case lists:member({X,Y}, lists:flatten(S#state.shoot)) of
-                                    true ->
-                                        case lists:member({X,Y}, [Bot#bot.pos || Bot <- MyBots]) of
-                                            false ->
-                                        case length([Z || Z = {hit, _, _} <- Events]) of
-                                            0 ->
-                                                S#state{ignore = [{X,Y}|S#state.ignore]};
-                                            _ ->
-                                                S
-                                        end;
-                                            true ->
-                                                S
-                                        end;
-                                    false ->
-                                        S
-                                end
-                        end
-                end, State0, RadarSeen0 ++ AdjacentSeen0),
+    lists:foldl(
+      fun({X,Y}, S) ->
+              NewIgnore = not lists:member({X,Y}, S#state.ignore)
+              andalso lists:member({X,Y}, S#state.shoot)
+              andalso not lists:member({X,Y}, [Bot#bot.pos || Bot <- MyBots])
+              andalso length([Z || Z = {hit, _, _} <- Events]) =:= 0,
+              if NewIgnore ->
+                     S#state{ignore = [{X,Y}|S#state.ignore]};
+                 true ->
+                     S
+              end
+      end, State0, RadarSeen0 ++ AdjacentSeen0),
 
     RadarSeen = RadarSeen0 -- State#state.ignore,
     AdjacentSeen = AdjacentSeen0 -- State#state.ignore,
@@ -111,27 +100,20 @@ give_moves(_RoundId,
                           alive   = _IsMyBotAlive,
                           pos     = {MyBotX, MyBotY}}, {Actions, S}) ->
 
-                     IAmDetected = lists:member(BotId, Detected ++ Damaged),
+                     IAmDetected =
+                       lists:member(BotId, Detected ++ Damaged ++ AdjacentMy),
                      {Action, NewState} =
                          if IAmDetected ->
                                 {run_as_fast_as_you_can(BotId, MyBotX, MyBotY,
-                                                       ConfigFieldRadius),
-                                 S};
+                                                       ConfigFieldRadius), S};
                             AdjacentSeen =/= [] ->
-                                case lists:member(BotId, AdjacentMy) of
-                                    true ->
-                                        {run_as_fast_as_you_can(BotId, MyBotX, MyBotY,
-                                                                ConfigFieldRadius),
-                                         S};
-                                    false ->
-                                        Shoot = shoot(BotId, hd(AdjacentSeen)),
-                                        {Shoot, write_shoot(S,AdjacentSeen)}
-                                end;
+                                Where = hd(AdjacentSeen),
+                                {shoot(BotId, Where), write_shoot(S, Where)};
                             RadarSeen =/= []
                             andalso (S#state.shootn < NAlive-1
                                      orelse NAlive =:= 1) ->
-                                Shoot = shoot(BotId, hd(RadarSeen)),
-                                {Shoot, write_shoot(S,RadarSeen)};
+                                Where = hd(RadarSeen),
+                                {shoot(BotId, Where), write_shoot(S, Where)};
                             RadarSeen =/= []
                             andalso S#state.shootn =:= NAlive-1 ->
                                 {scanxy(BotId, hd(RadarSeen)), S};

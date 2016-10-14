@@ -4,12 +4,11 @@
   {id,           "space"},
   {modules,      [space,
                   space_application,
-                  simple_space_ai,
                   space_ai]},
   {registered,   []},
   {applications, [kernel, stdlib]},
   {mod, {space_application, []}},
   {env, [{current_ai,   space_ai},
-         {host_address, "ws://10.147.40.105:3000"},
+         {host_address, "ws://127.0.0.1:3000"},
          {team_name,    <<"RamDenys">>}]
   }]}.
